@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-container-pod
+  namespace: default
+  labels:
+    app: multi-container-app
+spec:
+  containers:
+  - name: frontend
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: shared-data
+      mountPath: /shared-data
+    resources:
+      limits:
+        cpu: "0.5"
+        memory: 512Mi
+      requests:
+        cpu: "0.2"
+        memory: 256Mi
+    env:
+    - name: BACKEND_SERVICE
+      value: "localhost:8080"
+
+  - name: backend
+    image: python:3.9-slim
+    command: ["/bin/sh", "-c"]
+    args: ["python -m http.server 8080"]
+    ports:
+    - containerPort: 8080
+    volumeMounts:
+    - name: shared-data
+      mountPath: /shared-data
+    - name: logs
+      mountPath: /logs
+    resources:
+      limits:
+        cpu: "0.5"
+        memory: 512Mi
+      requests:
+        cpu: "0.3"
+        memory: 384Mi
+
+  - name: logger
+    image: fluent/fluentd:v1.14
+    volumeMounts:
+    - name: logs
+      mountPath: /fluentd/log
+    - name: config
+      mountPath: /fluentd/etc
+    resources:
+      limits:
+        cpu: "0.3"
+        memory: 256Mi
+      requests:
+        cpu: "0.1"
+        memory: 128Mi
+
+  volumes:
+  - name: shared-data
+    emptyDir: {}
+  - name: logs
+    emptyDir: {}
+  - name: config
+    configMap:
+      name: fluentd-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: default
+data:
+  fluent.conf: |
+    <source>
+      @type tail
+      path /fluentd/log/*.log
+      pos_file /fluentd/log/app.log.pos
+      tag app.*
+      <parse>
+        @type json
+      </parse>
+    </source>
+    
+    <match app.**>
+      @type stdout
+    </match>
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-container-service
+  namespace: default
+spec:
+  selector:
+    app: multi-container-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: api
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP

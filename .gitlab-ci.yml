@@ -1,0 +1,99 @@
+stages:
+  - validate
+  - plan
+  - apply
+
+variables:
+  TF_ROOT: ${CI_PROJECT_DIR}/terraform
+  TF_LOG: INFO
+  
+# Reusable templates and jobs
+.terraform_init: &terraform_init
+  before_script:
+    - cd ${TF_ROOT}
+    - echo "Creating terraform.tfvars from CI/CD variables"
+    - |
+      cat > terraform.tfvars <<EOL
+      aws_region = "${AWS_REGION}"
+      aws_profile = "default"
+      vpc_id = "${VPC_ID}"
+      k3s_master_instance_id = "${K3S_MASTER_INSTANCE_ID}"
+      k3s_token = "${K3S_TOKEN}"
+      k3s_api_endpoint = "${K3S_API_ENDPOINT}"
+      container_image_frontend = "${CONTAINER_IMAGE_FRONTEND:-nginx:latest}"
+      container_image_backend = "${CONTAINER_IMAGE_BACKEND:-python:3.9-slim}"
+      container_image_logger = "${CONTAINER_IMAGE_LOGGER:-fluent/fluentd:v1.14}"
+      pod_name = "${POD_NAME:-multi-container-pod}"
+      namespace = "${NAMESPACE:-default}"
+      EOL
+    - chmod +x ${CI_PROJECT_DIR}/scripts/k3s-kubeconfig.sh
+    - terraform init
+
+terraform:fmt:
+  stage: validate
+  image: hashicorp/terraform:1.5.0
+  <<: *terraform_init
+  script:
+    - terraform fmt -check -recursive
+  only:
+    - merge_requests
+    - main
+    - tags
+  
+terraform:validate:
+  stage: validate
+  image: hashicorp/terraform:1.5.0
+  <<: *terraform_init
+  script:
+    - terraform validate
+  only:
+    - merge_requests
+    - main
+    - tags
+
+terraform:plan:
+  stage: plan
+  image: hashicorp/terraform:1.5.0
+  <<: *terraform_init
+  script:
+    - terraform plan -out=tfplan
+    - terraform show -no-color tfplan > tfplan.txt
+  artifacts:
+    paths:
+      - ${TF_ROOT}/tfplan
+      - ${TF_ROOT}/tfplan.txt
+    expire_in: 1 week
+  only:
+    - merge_requests
+    - main
+    - tags
+
+terraform:apply:
+  stage: apply
+  image: hashicorp/terraform:1.5.0
+  <<: *terraform_init
+  script:
+    - terraform apply -auto-approve
+  dependencies:
+    - terraform:plan
+  when: manual  # Requires manual approval
+  only:
+    - main
+    - tags
+  environment:
+    name: production
+    
+# Add a job to deploy to staging automatically
+terraform:apply:staging:
+  stage: apply
+  image: hashicorp/terraform:1.5.0
+  <<: *terraform_init
+  script:
+    - terraform workspace select staging || terraform workspace new staging
+    - terraform apply -auto-approve -var="namespace=staging"
+  dependencies:
+    - terraform:plan
+  only:
+    - main
+  environment:
+    name: staging
