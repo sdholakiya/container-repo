@@ -1,6 +1,6 @@
 # Multi-Container Pod Deployment with Terraform
 
-This repository contains a Terraform infrastructure as code (IaC) solution for deploying a multi-container pod to an existing k3s cluster running on AWS EC2. The deployment includes three containers (frontend, backend, and logger) that communicate with each other within the same pod.
+This repository contains a Terraform infrastructure as code (IaC) solution for deploying a multi-container pod to an existing k3s cluster running on AWS EC2 in private subnets. The deployment includes three containers (frontend, backend, and logger) that communicate with each other within the same pod.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ All three containers share volumes for data exchange and logging:
 
 - AWS CLI configured with appropriate credentials
 - Terraform v1.0.0 or higher
-- An existing k3s cluster running on EC2
+- An existing k3s cluster running on EC2 in private subnets
 - AWS SSM access to the k3s master node
 
 ## Project Structure
@@ -31,7 +31,8 @@ All three containers share volumes for data exchange and logging:
 │   └── kubernetes
 │       └── multi-container-pod.yaml  # Example Kubernetes manifest
 ├── scripts
-│   └── k3s-kubeconfig.sh        # Script to get kubeconfig from master node
+│   ├── k3s-kubeconfig.sh        # Script to get kubeconfig from master node
+│   └── generate-kubeconfig.sh   # Script to generate kubeconfig file for Terraform
 └── terraform
     ├── main.tf                  # Main Terraform configuration
     ├── variables.tf             # Input variables declaration
@@ -43,9 +44,23 @@ All three containers share volumes for data exchange and logging:
             └── outputs.tf       # Module outputs
 ```
 
-## Setup Instructions
+## Setup Instructions for Private Subnet Deployment
 
-### 1. Configure Variables
+### 1. Generate Kubeconfig File
+
+First, generate a kubeconfig file that Terraform will use to connect to your k3s cluster in private subnets:
+
+```sh
+# Make the script executable
+chmod +x scripts/generate-kubeconfig.sh
+
+# Generate the kubeconfig by providing the k3s master instance ID
+./scripts/generate-kubeconfig.sh i-xxxxxxxxxx
+```
+
+This will create a `k3s-kubeconfig.yaml` file in the scripts directory that is configured to use the private IP of your k3s master node.
+
+### 2. Configure Variables
 
 Create a `terraform.tfvars` file based on the example:
 
@@ -57,13 +72,17 @@ Update the values to match your existing infrastructure:
 
 ```
 aws_region            = "us-west-2"              # Your AWS region
+aws_profile           = "default"                # AWS profile to use
 vpc_id                = "vpc-xxxxxxxx"           # Existing VPC ID
 k3s_master_instance_id = "i-xxxxxxxxxx"          # EC2 instance ID of k3s master
-k3s_token             = "your-k3s-token"         # k3s token
-k3s_api_endpoint      = "https://x.x.x.x:6443"   # k3s API endpoint
+pod_name              = "multi-container-pod"    # Name for the pod
+namespace             = "default"                # Kubernetes namespace
+container_image_frontend = "nginx:latest"        # Frontend container image
+container_image_backend  = "python:3.9-slim"     # Backend container image
+container_image_logger   = "fluent/fluentd:v1.14" # Logger container image
 ```
 
-### 2. Initialize and Apply Terraform
+### 3. Initialize and Apply Terraform
 
 ```sh
 cd terraform
@@ -72,14 +91,23 @@ terraform plan
 terraform apply
 ```
 
-### 3. Verify Deployment
+### 4. Verify Deployment
 
 Once the deployment is complete, you can verify it by connecting to your k3s cluster:
 
 ```sh
+export KUBECONFIG=$(pwd)/../scripts/k3s-kubeconfig.yaml
 kubectl get pods
 kubectl describe pod multi-container-pod
 ```
+
+## How This Works with Private Subnets
+
+The key difference in this deployment is that we:
+
+1. Generate a kubeconfig file that uses the private IP of the k3s master node
+2. Configure Terraform to use this kubeconfig file directly, rather than trying to connect to the API endpoint URL
+3. This allows Terraform to deploy resources to a k3s cluster in private subnets without requiring public API access
 
 ## CI/CD Pipeline
 
@@ -100,8 +128,6 @@ The following CI/CD variables need to be configured in GitLab:
 | AWS_REGION | AWS region |
 | VPC_ID | Existing VPC ID |
 | K3S_MASTER_INSTANCE_ID | EC2 instance ID of k3s master |
-| K3S_TOKEN | k3s token |
-| K3S_API_ENDPOINT | k3s API endpoint URL |
 | CONTAINER_IMAGE_FRONTEND | Frontend container image (optional) |
 | CONTAINER_IMAGE_BACKEND | Backend container image (optional) |
 | CONTAINER_IMAGE_LOGGER | Logger container image (optional) |
@@ -130,13 +156,15 @@ To customize the deployment:
 
 If you encounter issues:
 
-1. Check that AWS credentials have permission to access the EC2 instance
-2. Verify the k3s cluster is running and accessible
-3. Ensure the k3s token and API endpoint are correct
-4. Check the Terraform logs for detailed error messages
+1. Check that AWS credentials have permission to access the EC2 instance through SSM
+2. Verify the k3s cluster is running and accessible from your network
+3. Check that the private IP of the k3s master is correct in the kubeconfig file
+4. Ensure the AWS instance has proper IAM roles for SSM access
+5. Check the Terraform logs for detailed error messages
 
 ## Security Considerations
 
-- The k3s token is marked as sensitive in Terraform
+- The kubeconfig file contains sensitive information and should be protected
 - For production use, consider setting up proper RBAC for the Kubernetes deployment
 - Use AWS IAM roles with minimal permissions for the CI/CD pipeline
+- Using kubeconfig with private IPs is more secure than exposing the k3s API endpoint publicly
